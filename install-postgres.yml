@@ -1,0 +1,88 @@
+---
+- name: Install and Configure PostgreSQL on macOS ARM64
+  hosts: localhost
+  become: no
+  vars_prompt:
+    - name: postgres_password
+      prompt: "Please select your PostgreSQL password"
+      private: yes
+
+  vars:
+    ansible_python_interpreter: ./venv/bin/python3
+    postgres_user: db-user01
+
+  tasks:
+    - name: Install PostgreSQL via Homebrew
+      ansible.builtin.homebrew:
+        name: postgresql
+        state: present
+
+    - name: Start PostgreSQL service
+      ansible.builtin.command:
+        cmd: brew services start postgresql
+        creates: /opt/homebrew/var/postgres/postmaster.pid
+
+    - name: Initialize PostgreSQL database (if not already initialized)
+      ansible.builtin.command:
+        cmd: initdb /opt/homebrew/var/postgres
+      args:
+        creates: /opt/homebrew/var/postgres/PG_VERSION
+
+    - name: Create PostgreSQL user '{{ postgres_user }}'
+      command: >
+        psql -d postgres -c "
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_catalog.pg_user WHERE usename = '\"{{ postgres_user }}\"') THEN
+              CREATE USER \"{{ postgres_user }}\" WITH SUPERUSER PASSWORD '{{ postgres_password }}';
+            END IF;
+          END
+          $$;
+        "
+
+    - name: Allow PostgreSQL to listen on all IP addresses
+      ansible.builtin.lineinfile:
+        path: /opt/homebrew/var/postgres/postgresql.conf
+        regexp: '^#listen_addresses'
+        line: "listen_addresses = '*'"
+        backup: yes
+
+    - name: Configure authentication to allow password access
+      ansible.builtin.blockinfile:
+        path: /opt/homebrew/var/postgres/pg_hba.conf
+        block: |
+          host all all 0.0.0.0/0 md5
+          host all all ::/0 md5
+
+    - name: Restart PostgreSQL to apply changes
+      ansible.builtin.command:
+        cmd: brew services restart postgresql
+
+    - name: Create sample table 'employees' if it does not exist
+      postgresql_query:
+        db: postgres
+        query: |
+          CREATE TABLE IF NOT EXISTS employees (
+              id SERIAL PRIMARY KEY,
+              name VARCHAR(100),
+              title VARCHAR(100),
+              department VARCHAR(100),
+              hire_date DATE
+          );
+        login_user: "{{ postgres_user }}"
+        login_password: "{{ postgres_password }}"
+      become_user: "{{ postgres_user }}"
+
+    - name: Insert sample data into 'employees' table
+      postgresql_query:
+        db: postgres
+        query: |
+          INSERT INTO employees (name, title, department, hire_date)
+          VALUES
+              ('Keith Chan', 'Solution Architect', 'Client Engineering', '2021-01-01'),
+              ('Yong Jia Chan', 'Technology Engineer', 'Client Engineering', '2021-01-01'),
+              ('Jolynn Lim', 'Recruiter', 'Global Sales', '2021-01-01')
+          ON CONFLICT DO NOTHING;
+        login_user: "{{ postgres_user }}"
+        login_password: "{{ postgres_password }}"
+      become_user: "{{ postgres_user }}"
